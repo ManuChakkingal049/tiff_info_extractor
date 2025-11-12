@@ -14,7 +14,7 @@ import numpy as np
 # Streamlit page setup
 # -------------------------
 st.set_page_config(page_title="GeoTIFF Multi-Coordinate Extractor", layout="wide")
-st.title("🗺️ GeoTIFF Multi-Coordinate Extractor (Stable + Max Value + Zoom)")
+st.title("🗺️ GeoTIFF Multi-Coordinate Extractor")
 
 st.markdown("""
 Upload a **GeoTIFF** or use the built-in example.  
@@ -24,6 +24,7 @@ The app will automatically:
 - Extract pixel values for **single, multiple, or CSV coordinates**  
 - Display results in a table and allow CSV download  
 - Visualize all points and max-value on OpenStreetMap, zoomed to the raster area  
+- The wildfare tiff is obtained from https://github.com/GeoTIFF/test-data/blob/main/files/wildfires.tiff
 """)
 
 # -------------------------
