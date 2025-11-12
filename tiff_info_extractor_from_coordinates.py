@@ -14,7 +14,7 @@ import numpy as np
 # Streamlit page setup
 # -------------------------
 st.set_page_config(page_title="GeoTIFF Multi-Coordinate Extractor", layout="wide")
-st.title("🗺️ GeoTIFF Multi-Coordinate Extractor (CRS-Aware + Max Value)")
+st.title("🗺️ GeoTIFF Multi-Coordinate Extractor (Stable + Max Value + Zoom)")
 
 st.markdown("""
 Upload a **GeoTIFF** or use the built-in example.  
@@ -23,8 +23,14 @@ The app will automatically:
 - Find the **maximum raster value** and its coordinates  
 - Extract pixel values for **single, multiple, or CSV coordinates**  
 - Display results in a table and allow CSV download  
-- Visualize all points and max-value on OpenStreetMap  
+- Visualize all points and max-value on OpenStreetMap, zoomed to the raster area  
 """)
+
+# -------------------------
+# Initialize session state
+# -------------------------
+if "extracted_results" not in st.session_state:
+    st.session_state["extracted_results"] = pd.DataFrame()
 
 # -------------------------
 # Load example TIFF
@@ -97,7 +103,6 @@ max_row, max_col = np.unravel_index(np.nanargmax(band), band.shape)
 
 with rasterio.MemoryFile(tiff_bytes) as memfile:
     with memfile.open() as src:
-        # Convert raster indices → CRS coordinates → EPSG:4326
         x_max, y_max = rasterio.transform.xy(transform, max_row, max_col)
         transformer = Transformer.from_crs(crs, "EPSG:4326", always_xy=True)
         max_lon, max_lat = transformer.transform(x_max, y_max)
@@ -157,7 +162,6 @@ else:  # CSV upload
 # -------------------------
 # Extract pixel values for coordinates
 # -------------------------
-df_result = pd.DataFrame()
 if coords:
     results = []
     with rasterio.MemoryFile(tiff_bytes) as memfile:
@@ -179,15 +183,15 @@ if coords:
                         "longitude (EPSG:4326)": lon,
                         "value": None
                     })
-    df_result = pd.DataFrame(results)
+    st.session_state["extracted_results"] = pd.DataFrame(results)
 
 # -------------------------
-# Display results
+# Display extracted table & download CSV
 # -------------------------
-if not df_result.empty:
+if not st.session_state["extracted_results"].empty:
+    df_result = st.session_state["extracted_results"]
     st.subheader("📊 Extracted Values")
     st.dataframe(df_result)
-
     st.download_button(
         "📥 Download CSV",
         data=df_result.to_csv(index=False).encode("utf-8"),
@@ -199,7 +203,14 @@ if not df_result.empty:
 # Map visualization
 # -------------------------
 st.subheader("🗺️ Map View (OpenStreetMap)")
-fmap = folium.Map(location=[max_lat, max_lon], zoom_start=5, tiles="OpenStreetMap")
+
+# Zoom to raster bounding box
+if bounds4326:
+    center_lat = (bounds4326[1] + bounds4326[3]) / 2
+    center_lon = (bounds4326[0] + bounds4326[2]) / 2
+    fmap = folium.Map(location=[center_lat, center_lon], zoom_start=8, tiles="OpenStreetMap")
+else:
+    fmap = folium.Map(location=[max_lat, max_lon], zoom_start=5, tiles="OpenStreetMap")
 
 # Max value marker
 folium.Marker(
@@ -210,13 +221,14 @@ folium.Marker(
 ).add_to(fmap)
 
 # Input coordinates markers
-for _, row in df_result.iterrows():
-    popup = f"Lat: {row['latitude (EPSG:4326)']}, Lon: {row['longitude (EPSG:4326)']}<br>Value: {row['value']}"
-    folium.Marker(
-        [row["latitude (EPSG:4326)"], row["longitude (EPSG:4326)"]],
-        popup=popup,
-        tooltip="Pixel value",
-        icon=folium.Icon(color="blue", icon="info-sign")
-    ).add_to(fmap)
+if not st.session_state["extracted_results"].empty:
+    for _, row in st.session_state["extracted_results"].iterrows():
+        popup = f"Lat: {row['latitude (EPSG:4326)']}, Lon: {row['longitude (EPSG:4326)']}<br>Value: {row['value']}"
+        folium.Marker(
+            [row["latitude (EPSG:4326)"], row["longitude (EPSG:4326)"]],
+            popup=popup,
+            tooltip="Pixel value",
+            icon=folium.Icon(color="blue", icon="info-sign")
+        ).add_to(fmap)
 
 st_folium(fmap, width=900, height=550)
