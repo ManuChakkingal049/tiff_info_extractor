@@ -8,21 +8,20 @@ from streamlit_folium import st_folium
 import matplotlib.pyplot as plt
 import requests
 from io import BytesIO
+from pyproj import Transformer
 
 st.set_page_config(page_title="GeoTIFF Value Extractor", layout="wide")
-st.title("🔥 GeoTIFF Value Extractor (OpenStreetMap Integration)")
+st.title("🔥 GeoTIFF Value Extractor (with CRS Handling & OpenStreetMap)")
 
 st.write("""
-Upload a GeoTIFF file or use the built-in wildfire example to extract pixel values
-based on latitude and longitude coordinates.
+Upload a GeoTIFF file or use the built-in wildfire example.  
+Extract pixel values by latitude and longitude — even if your TIFF uses a projected CRS (like UTM).  
 """)
 
-# Download example GeoTIFF if needed
+# Download example GeoTIFF (rasterio sample)
 @st.cache_data
 def load_example_tiff():
     url = "https://github.com/mapbox/rasterio/raw/main/tests/data/RGB.byte.tif"
-    # Substitute your own wildfire GeoTIFF here if you have one:
-    # url = "https://example.com/path/to/wildfires.tiff"
     response = requests.get(url)
     return response.content
 
@@ -35,7 +34,7 @@ else:
     src_file = load_example_tiff()
     filename = "wildfires.tiff"
 
-# Read TIFF into memory
+# Read TIFF
 with MemoryFile(src_file) as memfile:
     with memfile.open() as src:
         arr = src.read(1)
@@ -44,11 +43,14 @@ with MemoryFile(src_file) as memfile:
         crs = src.crs
 
 st.subheader("🧭 Coordinate Bounds")
-st.write(f"**Left (min lon):** {bounds.left}")
-st.write(f"**Bottom (min lat):** {bounds.bottom}")
-st.write(f"**Right (max lon):** {bounds.right}")
-st.write(f"**Top (max lat):** {bounds.top}")
 st.write(f"**CRS:** {crs}")
+st.write(f"**Left (min X):** {bounds.left}")
+st.write(f"**Bottom (min Y):** {bounds.bottom}")
+st.write(f"**Right (max X):** {bounds.right}")
+st.write(f"**Top (max Y):** {bounds.top}")
+
+# Create transformer (for lat/lon → raster CRS)
+transformer = Transformer.from_crs("EPSG:4326", crs, always_xy=True)
 
 st.subheader("🖼️ GeoTIFF Preview")
 fig, ax = plt.subplots(figsize=(6, 6))
@@ -63,7 +65,7 @@ coords = []
 if coord_mode == "Single coordinate":
     lat = st.number_input("Latitude", format="%.6f")
     lon = st.number_input("Longitude", format="%.6f")
-    if lat and lon:
+    if lat or lon:
         coords = [(lat, lon)]
 else:
     coord_text = st.text_area("Enter coordinates (one 'lat, lon' per line):")
@@ -84,7 +86,9 @@ if st.button("🔍 Extract Values"):
             with memfile.open() as src:
                 for lat, lon in coords:
                     try:
-                        row, col = src.index(lon, lat)
+                        # Convert from lat/lon (EPSG:4326) to raster CRS
+                        x, y = transformer.transform(lon, lat)
+                        row, col = src.index(x, y)
                         value = src.read(1)[row, col]
                         results.append({
                             "latitude": lat,
@@ -106,7 +110,7 @@ if st.button("🔍 Extract Values"):
         st.subheader("🗺️ Map View (OpenStreetMap)")
         center_lat = df["latitude"].mean()
         center_lon = df["longitude"].mean()
-        fmap = folium.Map(location=[center_lat, center_lon], zoom_start=6, tiles="OpenStreetMap")
+        fmap = folium.Map(location=[center_lat, center_lon], zoom_start=5, tiles="OpenStreetMap")
 
         for _, row in df.iterrows():
             popup_text = f"Lat: {row['latitude']}, Lon: {row['longitude']}<br>Value: {row['value']}"
@@ -118,6 +122,7 @@ if st.button("🔍 Extract Values"):
 
         st_folium(fmap, width=800, height=500)
 
+        # CSV download
         csv = df.to_csv(index=False).encode("utf-8")
         st.download_button(
             label="📥 Download results as CSV",
