@@ -7,20 +7,26 @@ from pyproj import Transformer
 import folium
 from streamlit_folium import st_folium
 import matplotlib.pyplot as plt
-from io import BytesIO
 import requests
+from io import BytesIO
 
-st.set_page_config(page_title="GeoTIFF Coordinate Extractor", layout="wide")
-st.title("🗺️ GeoTIFF Coordinate Extractor with OpenStreetMap")
+# -------------------------------------------------------------------
+# Streamlit setup
+# -------------------------------------------------------------------
+st.set_page_config(page_title="GeoTIFF Multi-Coordinate Extractor", layout="wide")
+st.title("🗺️ GeoTIFF Multi-Coordinate Extractor (CRS-Aware)")
 
 st.markdown("""
-Upload a **GeoTIFF** (e.g., satellite or climate data),  
-see its **bounds in real coordinates**, input latitude/longitude,  
-and extract the pixel value directly.  
+Upload a **GeoTIFF** or use the example.  
+Enter **latitude & longitude (EPSG:4326)** — single, multiple, or CSV — and the app will:  
+✅ Convert coordinates to the raster’s CRS  
+✅ Extract pixel values  
+✅ Display results and an OpenStreetMap preview  
+✅ Let you download the data as CSV  
 """)
 
 # -------------------------------------------------------------------
-# Load example TIFF (cached)
+# Cached example TIFF
 # -------------------------------------------------------------------
 @st.cache_data
 def load_example_tiff():
@@ -29,92 +35,156 @@ def load_example_tiff():
     return response.content
 
 # -------------------------------------------------------------------
-# File upload or example
+# Upload or use sample
 # -------------------------------------------------------------------
-uploaded_file = st.file_uploader("📂 Upload a GeoTIFF file", type=["tif", "tiff"])
+uploaded_file = st.file_uploader("📂 Upload GeoTIFF", type=["tif", "tiff"])
 if uploaded_file:
-    tiff_data = uploaded_file.read()
+    tiff_bytes = uploaded_file.read()
     filename = uploaded_file.name
 else:
-    st.info("Using sample wildfire image (`wildfires.tiff` example).")
-    tiff_data = load_example_tiff()
+    st.info("Using example GeoTIFF (`wildfires.tiff`).")
+    tiff_bytes = load_example_tiff()
     filename = "wildfires.tiff"
 
 # -------------------------------------------------------------------
-# Read TIFF once and store metadata
+# Read raster metadata
 # -------------------------------------------------------------------
-with rasterio.MemoryFile(tiff_data) as memfile:
+with rasterio.MemoryFile(tiff_bytes) as memfile:
     with memfile.open() as src:
         band = src.read(1)
-        bounds = src.bounds
         crs = src.crs
+        bounds = src.bounds
         transform = src.transform
 
-# Convert bounds to EPSG:4326 for readable lat/lon
+# Convert bounds to EPSG:4326
 try:
-    bounds_latlon = transform_bounds(crs, "EPSG:4326", *bounds)
+    bounds4326 = transform_bounds(crs, "EPSG:4326", *bounds)
 except Exception:
-    bounds_latlon = None
+    bounds4326 = None
 
-st.subheader("📐 GeoTIFF Information")
+# -------------------------------------------------------------------
+# Display raster metadata
+# -------------------------------------------------------------------
+st.subheader("📘 Raster Information")
 col1, col2 = st.columns(2)
 with col1:
     st.write(f"**File:** {filename}")
     st.write(f"**CRS:** {crs}")
-    st.write(f"**Width × Height:** {band.shape[1]} × {band.shape[0]}")
+    st.write(f"**Dimensions:** {band.shape[1]} × {band.shape[0]}")
 with col2:
-    if bounds_latlon:
-        st.write("**Coordinate Bounds (EPSG:4326)**")
-        st.write(f"Left (min lon): {bounds_latlon[0]:.4f}")
-        st.write(f"Bottom (min lat): {bounds_latlon[1]:.4f}")
-        st.write(f"Right (max lon): {bounds_latlon[2]:.4f}")
-        st.write(f"Top (max lat): {bounds_latlon[3]:.4f}")
+    if bounds4326:
+        st.write("**Bounds (EPSG:4326)**")
+        st.write(f"Min Lon: {bounds4326[0]:.4f}")
+        st.write(f"Min Lat: {bounds4326[1]:.4f}")
+        st.write(f"Max Lon: {bounds4326[2]:.4f}")
+        st.write(f"Max Lat: {bounds4326[3]:.4f}")
     else:
-        st.warning("Could not transform bounds to EPSG:4326")
+        st.warning("⚠️ Could not convert bounds to EPSG:4326")
 
 # -------------------------------------------------------------------
-# Preview TIFF Image
+# Show raster image
 # -------------------------------------------------------------------
-st.subheader("🖼️ GeoTIFF Preview")
+st.subheader("🖼️ Raster Preview")
 fig, ax = plt.subplots(figsize=(6, 6))
 show(band, transform=transform, ax=ax)
 ax.set_title(filename)
 st.pyplot(fig)
 
 # -------------------------------------------------------------------
-# Coordinate input section
+# Coordinate input form
 # -------------------------------------------------------------------
-st.subheader("📍 Coordinate Input")
-st.markdown("Enter **latitude and longitude** to extract the pixel value:")
+st.subheader("📍 Coordinate Input Options")
 
-with st.form("coord_form"):
-    lat = st.number_input("Latitude", format="%.6f")
-    lon = st.number_input("Longitude", format="%.6f")
-    extract_btn = st.form_submit_button("Extract Value")
+input_mode = st.radio(
+    "Choose input mode:",
+    ["Single coordinate", "Multiple coordinates", "Upload CSV (lat, lon)"],
+    horizontal=True
+)
 
-if extract_btn:
-    with rasterio.MemoryFile(tiff_data) as memfile:
-        with memfile.open() as src:
-            transformer = Transformer.from_crs("EPSG:4326", crs, always_xy=True)
+coords = []
+
+if input_mode == "Single coordinate":
+    with st.form("single_coord"):
+        lat = st.number_input("Latitude", format="%.6f")
+        lon = st.number_input("Longitude", format="%.6f")
+        submitted = st.form_submit_button("Extract Value")
+        if submitted:
+            coords = [(lat, lon)]
+
+elif input_mode == "Multiple coordinates":
+    with st.form("multi_coord"):
+        text_input = st.text_area(
+            "Enter coordinates (lat,lon) one per line:",
+            placeholder="Example:\n24.4675,54.3667\n25.1234,55.9876"
+        )
+        submitted = st.form_submit_button("Extract Values")
+        if submitted and text_input.strip():
             try:
-                x, y = transformer.transform(lon, lat)
-                row, col = src.index(x, y)
-                value = src.read(1)[row, col]
-                st.success(f"✅ Pixel value at ({lat:.6f}, {lon:.6f}) = **{value}**")
-            except Exception as e:
-                st.error(f"Could not extract value: {e}")
-                value = None
+                coords = [
+                    tuple(map(float, line.split(",")))
+                    for line in text_input.strip().splitlines()
+                    if "," in line
+                ]
+            except Exception:
+                st.error("⚠️ Invalid coordinate format. Use 'lat,lon' per line.")
 
-    # ----------------------------------------------------------------
-    # Show map only after extraction
-    # ----------------------------------------------------------------
-    if value is not None:
-        st.subheader("🌍 Map View (OpenStreetMap)")
-        fmap = folium.Map(location=[lat, lon], zoom_start=10, tiles="OpenStreetMap")
-        folium.Marker(
-            [lat, lon],
-            popup=f"Lat: {lat}, Lon: {lon}<br>Value: {value}",
-            tooltip="Clicked Point",
-            icon=folium.Icon(color="red", icon="info-sign")
-        ).add_to(fmap)
-        st_folium(fmap, width=900, height=500)
+else:  # CSV upload
+    uploaded_csv = st.file_uploader("Upload CSV file with 'lat' and 'lon' columns", type=["csv"])
+    if uploaded_csv:
+        df_csv = pd.read_csv(uploaded_csv)
+        if "lat" in df_csv.columns and "lon" in df_csv.columns:
+            st.write(f"✅ Loaded {len(df_csv)} coordinates from CSV.")
+            if st.button("Extract Values from CSV"):
+                coords = list(zip(df_csv["lat"], df_csv["lon"]))
+        else:
+            st.error("CSV must contain columns named 'lat' and 'lon'.")
+
+# -------------------------------------------------------------------
+# Process coordinates
+# -------------------------------------------------------------------
+if coords:
+    results = []
+    with rasterio.MemoryFile(tiff_bytes) as memfile:
+        with memfile.open() as src:
+            transformer = Transformer.from_crs("EPSG:4326", src.crs, always_xy=True)
+            for lat, lon in coords:
+                try:
+                    x, y = transformer.transform(lon, lat)
+                    row, col = src.index(x, y)
+                    val = src.read(1)[row, col]
+                    results.append({
+                        "latitude (EPSG:4326)": lat,
+                        "longitude (EPSG:4326)": lon,
+                        "value": val
+                    })
+                except Exception as e:
+                    results.append({
+                        "latitude (EPSG:4326)": lat,
+                        "longitude (EPSG:4326)": lon,
+                        "value": None
+                    })
+
+    df_result = pd.DataFrame(results)
+    st.subheader("📊 Extracted Results")
+    st.dataframe(df_result)
+
+    csv_bytes = df_result.to_csv(index=False).encode("utf-8")
+    st.download_button(
+        "📥 Download Results as CSV",
+        data=csv_bytes,
+        file_name="tiff_extracted_values.csv",
+        mime="text/csv"
+    )
+
+    # -------------------------------------------------------------------
+    # Map visualization
+    # -------------------------------------------------------------------
+    st.subheader("🗺️ Locations on OpenStreetMap")
+    if not df_result.empty:
+        center_lat = df_result["latitude (EPSG:4326)"].mean()
+        center_lon = df_result["longitude (EPSG:4326)"].mean()
+        fmap = folium.Map(location=[center_lat, center_lon], zoom_start=5, tiles="OpenStreetMap")
+        for _, row in df_result.iterrows():
+            popup = f"Lat: {row['latitude (EPSG:4326)']}, Lon: {row['longitude (EPSG:4326)']}<br>Value: {row['value']}"
+            folium.Marker(
+                [row["latitude (EPSG:4326)"], row["longitude (EPSG:4326)"]],
