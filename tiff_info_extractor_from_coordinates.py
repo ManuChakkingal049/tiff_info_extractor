@@ -8,34 +8,33 @@ import folium
 from streamlit_folium import st_folium
 import matplotlib.pyplot as plt
 import requests
+import numpy as np
 
-# -------------------------------------------------------------------
-# Streamlit setup
-# -------------------------------------------------------------------
+# -------------------------
+# Streamlit page setup
+# -------------------------
 st.set_page_config(page_title="GeoTIFF Multi-Coordinate Extractor", layout="wide")
 st.title("🗺️ GeoTIFF Multi-Coordinate Extractor (CRS-Aware + Max Value)")
 
 st.markdown("""
-Upload a **GeoTIFF** or use the example.  
-Enter **latitude & longitude (EPSG:4326)** — single, multiple, or CSV — and the app will:  
-✅ Convert coordinates to the raster’s CRS  
-✅ Extract pixel values  
-✅ Display results and an OpenStreetMap preview  
-✅ Identify and display the coordinate with **maximum raster value**
+Upload a **GeoTIFF** or use the built-in example.  
+The app will automatically:
+- Show **bounding box** in EPSG:4326  
+- Find the **maximum raster value** and its coordinates  
+- Extract pixel values for **single, multiple, or CSV coordinates**  
+- Display results in a table and allow CSV download  
+- Visualize all points and max-value on OpenStreetMap  
 """)
 
-# -------------------------------------------------------------------
-# Cached example TIFF
-# -------------------------------------------------------------------
+# -------------------------
+# Load example TIFF
+# -------------------------
 @st.cache_data
 def load_example_tiff():
     url = "https://github.com/mapbox/rasterio/raw/main/tests/data/RGB.byte.tif"
     response = requests.get(url)
     return response.content
 
-# -------------------------------------------------------------------
-# Upload or use sample
-# -------------------------------------------------------------------
 uploaded_file = st.file_uploader("📂 Upload GeoTIFF", type=["tif", "tiff"])
 if uploaded_file:
     tiff_bytes = uploaded_file.read()
@@ -45,9 +44,9 @@ else:
     tiff_bytes = load_example_tiff()
     filename = "wildfires.tiff"
 
-# -------------------------------------------------------------------
+# -------------------------
 # Read raster metadata
-# -------------------------------------------------------------------
+# -------------------------
 with rasterio.MemoryFile(tiff_bytes) as memfile:
     with memfile.open() as src:
         band = src.read(1)
@@ -62,9 +61,9 @@ try:
 except Exception:
     bounds4326 = None
 
-# -------------------------------------------------------------------
-# Display raster metadata
-# -------------------------------------------------------------------
+# -------------------------
+# Display raster info
+# -------------------------
 st.subheader("📘 Raster Information")
 col1, col2 = st.columns(2)
 with col1:
@@ -81,20 +80,36 @@ with col2:
     else:
         st.warning("⚠️ Could not convert bounds to EPSG:4326")
 
-# -------------------------------------------------------------------
-# Show raster image
-# -------------------------------------------------------------------
+# -------------------------
+# Raster preview
+# -------------------------
 st.subheader("🖼️ Raster Preview")
 fig, ax = plt.subplots(figsize=(6, 6))
 show(band, transform=transform, ax=ax)
 ax.set_title(filename)
 st.pyplot(fig)
 
-# -------------------------------------------------------------------
-# Coordinate input form
-# -------------------------------------------------------------------
-st.subheader("📍 Coordinate Input Options")
+# -------------------------
+# Compute max value and coordinate
+# -------------------------
+max_val = np.nanmax(band)
+max_row, max_col = np.unravel_index(np.nanargmax(band), band.shape)
 
+with rasterio.MemoryFile(tiff_bytes) as memfile:
+    with memfile.open() as src:
+        # Convert raster indices → CRS coordinates → EPSG:4326
+        x_max, y_max = rasterio.transform.xy(transform, max_row, max_col)
+        transformer = Transformer.from_crs(crs, "EPSG:4326", always_xy=True)
+        max_lon, max_lat = transformer.transform(x_max, y_max)
+
+st.subheader("🌟 Maximum Raster Value")
+st.write(f"**Max Value:** {max_val}")
+st.write(f"**Coordinate (EPSG:4326):** ({max_lat:.6f}, {max_lon:.6f})")
+
+# -------------------------
+# Coordinate input
+# -------------------------
+st.subheader("📍 Coordinate Input Options")
 input_mode = st.radio(
     "Choose input mode:",
     ["Single coordinate", "Multiple coordinates", "Upload CSV (lat, lon)"],
@@ -115,7 +130,7 @@ elif input_mode == "Multiple coordinates":
     with st.form("multi_coord"):
         text_input = st.text_area(
             "Enter coordinates (lat,lon) one per line:",
-            placeholder="Example:\n24.4675,54.3667\n25.1234,55.9876"
+            placeholder="24.4675,54.3667\n25.1234,55.9876"
         )
         submitted = st.form_submit_button("Extract Values")
         if submitted and text_input.strip():
@@ -139,9 +154,10 @@ else:  # CSV upload
         else:
             st.error("CSV must contain columns named 'lat' and 'lon'.")
 
-# -------------------------------------------------------------------
-# Process coordinates and find max value
-# -------------------------------------------------------------------
+# -------------------------
+# Extract pixel values for coordinates
+# -------------------------
+df_result = pd.DataFrame()
 if coords:
     results = []
     with rasterio.MemoryFile(tiff_bytes) as memfile:
@@ -163,56 +179,44 @@ if coords:
                         "longitude (EPSG:4326)": lon,
                         "value": None
                     })
-
     df_result = pd.DataFrame(results)
 
-    # Find max value and its coordinate
-    if df_result["value"].notna().any():
-        max_row = df_result.loc[df_result["value"].idxmax()]
-        st.subheader("🌟 Maximum Value Found")
-        st.write(f"**Max Value:** {max_row['value']}")
-        st.write(f"**Coordinate (EPSG:4326):** ({max_row['latitude (EPSG:4326)']:.6f}, {max_row['longitude (EPSG:4326)']:.6f})")
-    else:
-        max_row = None
-        st.warning("No valid raster values extracted.")
-
-    # Display results in table
-    st.subheader("📊 Extracted Results")
+# -------------------------
+# Display results
+# -------------------------
+if not df_result.empty:
+    st.subheader("📊 Extracted Values")
     st.dataframe(df_result)
 
-    csv_bytes = df_result.to_csv(index=False).encode("utf-8")
     st.download_button(
-        "📥 Download Results as CSV",
-        data=csv_bytes,
+        "📥 Download CSV",
+        data=df_result.to_csv(index=False).encode("utf-8"),
         file_name="tiff_extracted_values.csv",
         mime="text/csv"
     )
 
-    # -------------------------------------------------------------------
-    # Map visualization
-    # -------------------------------------------------------------------
-    st.subheader("🗺️ Locations on OpenStreetMap")
-    if not df_result.empty:
-        center_lat = df_result["latitude (EPSG:4326)"].mean()
-        center_lon = df_result["longitude (EPSG:4326)"].mean()
-        fmap = folium.Map(location=[center_lat, center_lon], zoom_start=5, tiles="OpenStreetMap")
+# -------------------------
+# Map visualization
+# -------------------------
+st.subheader("🗺️ Map View (OpenStreetMap)")
+fmap = folium.Map(location=[max_lat, max_lon], zoom_start=5, tiles="OpenStreetMap")
 
-        for _, row in df_result.iterrows():
-            popup = f"Lat: {row['latitude (EPSG:4326)']}, Lon: {row['longitude (EPSG:4326)']}<br>Value: {row['value']}"
-            folium.Marker(
-                [row["latitude (EPSG:4326)"], row["longitude (EPSG:4326)"]],
-                popup=popup,
-                tooltip="Pixel value",
-                icon=folium.Icon(color="blue", icon="info-sign")
-            ).add_to(fmap)
+# Max value marker
+folium.Marker(
+    [max_lat, max_lon],
+    popup=f"🌟 Max Value: {max_val}",
+    tooltip="Max Value",
+    icon=folium.Icon(color="green", icon="star")
+).add_to(fmap)
 
-        # Highlight max-value point
-        if max_row is not None:
-            folium.Marker(
-                [max_row["latitude (EPSG:4326)"], max_row["longitude (EPSG:4326)"]],
-                popup=f"🌟 Max Value: {max_row['value']}",
-                tooltip="Max Value",
-                icon=folium.Icon(color="green", icon="star")
-            ).add_to(fmap)
+# Input coordinates markers
+for _, row in df_result.iterrows():
+    popup = f"Lat: {row['latitude (EPSG:4326)']}, Lon: {row['longitude (EPSG:4326)']}<br>Value: {row['value']}"
+    folium.Marker(
+        [row["latitude (EPSG:4326)"], row["longitude (EPSG:4326)"]],
+        popup=popup,
+        tooltip="Pixel value",
+        icon=folium.Icon(color="blue", icon="info-sign")
+    ).add_to(fmap)
 
-        st_folium(fmap, width=900, height=550)
+st_folium(fmap, width=900, height=550)
