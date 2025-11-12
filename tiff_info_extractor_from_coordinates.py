@@ -8,13 +8,12 @@ import folium
 from streamlit_folium import st_folium
 import matplotlib.pyplot as plt
 import requests
-from io import BytesIO
 
 # -------------------------------------------------------------------
 # Streamlit setup
 # -------------------------------------------------------------------
 st.set_page_config(page_title="GeoTIFF Multi-Coordinate Extractor", layout="wide")
-st.title("🗺️ GeoTIFF Multi-Coordinate Extractor (CRS-Aware)")
+st.title("🗺️ GeoTIFF Multi-Coordinate Extractor (CRS-Aware + Max Value)")
 
 st.markdown("""
 Upload a **GeoTIFF** or use the example.  
@@ -22,7 +21,7 @@ Enter **latitude & longitude (EPSG:4326)** — single, multiple, or CSV — and 
 ✅ Convert coordinates to the raster’s CRS  
 ✅ Extract pixel values  
 ✅ Display results and an OpenStreetMap preview  
-✅ Let you download the data as CSV  
+✅ Identify and display the coordinate with **maximum raster value**
 """)
 
 # -------------------------------------------------------------------
@@ -55,6 +54,7 @@ with rasterio.MemoryFile(tiff_bytes) as memfile:
         crs = src.crs
         bounds = src.bounds
         transform = src.transform
+        height, width = band.shape
 
 # Convert bounds to EPSG:4326
 try:
@@ -70,7 +70,7 @@ col1, col2 = st.columns(2)
 with col1:
     st.write(f"**File:** {filename}")
     st.write(f"**CRS:** {crs}")
-    st.write(f"**Dimensions:** {band.shape[1]} × {band.shape[0]}")
+    st.write(f"**Dimensions:** {width} × {height}")
 with col2:
     if bounds4326:
         st.write("**Bounds (EPSG:4326)**")
@@ -140,7 +140,7 @@ else:  # CSV upload
             st.error("CSV must contain columns named 'lat' and 'lon'.")
 
 # -------------------------------------------------------------------
-# Process coordinates
+# Process coordinates and find max value
 # -------------------------------------------------------------------
 if coords:
     results = []
@@ -157,7 +157,7 @@ if coords:
                         "longitude (EPSG:4326)": lon,
                         "value": val
                     })
-                except Exception as e:
+                except Exception:
                     results.append({
                         "latitude (EPSG:4326)": lat,
                         "longitude (EPSG:4326)": lon,
@@ -165,6 +165,18 @@ if coords:
                     })
 
     df_result = pd.DataFrame(results)
+
+    # Find max value and its coordinate
+    if df_result["value"].notna().any():
+        max_row = df_result.loc[df_result["value"].idxmax()]
+        st.subheader("🌟 Maximum Value Found")
+        st.write(f"**Max Value:** {max_row['value']}")
+        st.write(f"**Coordinate (EPSG:4326):** ({max_row['latitude (EPSG:4326)']:.6f}, {max_row['longitude (EPSG:4326)']:.6f})")
+    else:
+        max_row = None
+        st.warning("No valid raster values extracted.")
+
+    # Display results in table
     st.subheader("📊 Extracted Results")
     st.dataframe(df_result)
 
@@ -184,6 +196,7 @@ if coords:
         center_lat = df_result["latitude (EPSG:4326)"].mean()
         center_lon = df_result["longitude (EPSG:4326)"].mean()
         fmap = folium.Map(location=[center_lat, center_lon], zoom_start=5, tiles="OpenStreetMap")
+
         for _, row in df_result.iterrows():
             popup = f"Lat: {row['latitude (EPSG:4326)']}, Lon: {row['longitude (EPSG:4326)']}<br>Value: {row['value']}"
             folium.Marker(
@@ -192,4 +205,14 @@ if coords:
                 tooltip="Pixel value",
                 icon=folium.Icon(color="blue", icon="info-sign")
             ).add_to(fmap)
+
+        # Highlight max-value point
+        if max_row is not None:
+            folium.Marker(
+                [max_row["latitude (EPSG:4326)"], max_row["longitude (EPSG:4326)"]],
+                popup=f"🌟 Max Value: {max_row['value']}",
+                tooltip="Max Value",
+                icon=folium.Icon(color="green", icon="star")
+            ).add_to(fmap)
+
         st_folium(fmap, width=900, height=550)
