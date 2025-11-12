@@ -188,3 +188,8 @@ if coords:
             popup = f"Lat: {row['latitude (EPSG:4326)']}, Lon: {row['longitude (EPSG:4326)']}<br>Value: {row['value']}"
             folium.Marker(
                 [row["latitude (EPSG:4326)"], row["longitude (EPSG:4326)"]],
+                popup=popup,
+                tooltip="Pixel value",
+                icon=folium.Icon(color="blue", icon="info-sign")
+            ).add_to(fmap)
+        st_folium(fmap, width=900, height=550)
